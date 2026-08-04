@@ -34,8 +34,11 @@ ARG BUILD_ARCHITECTURE
 # default, this is detected automatically.
 ARG BUILD_JOBS
 
-# The directory that will house the guacamole-server source during the build 
-ARG BUILD_DIR=/tmp/guacamole-server
+# The directory that will house the guacamole-server source during the build.
+# NOTE: This must not be "/tmp/guacamole-server" - that path is where the
+# guacamole-server git clone itself lands (see WITH_GUACAMOLE_SERVER below),
+# and git refuses to clone into a non-empty directory.
+ARG BUILD_DIR=/tmp/build
 
 # FreeRDP version (default to version 2)
 ARG FREERDP_VERSION=2
@@ -56,6 +59,14 @@ ARG WITH_LIBTELNET='\d+(\.\d+)+'
 ARG WITH_LIBVNCCLIENT='LibVNCServer-\d+(\.\d+)+'
 ARG WITH_LIBWEBSOCKETS='v\d+(\.\d+)+'
 
+# The git ref (tag, branch, or commit) of guacamole-server itself to build.
+# Tracking "main" to pick up fixes/features ahead of the last release. NOTE:
+# main commit 55f55caf (GUACAMOLE-2294) crashes guacd on startup if
+# /etc/guacamole/guacd.conf does not exist - the runtime deployment (see
+# docker-compose.yml) MUST mount a guacd.conf to work around this. Override
+# with --build-arg to pin a specific ref instead, e.g. a release tag.
+ARG WITH_GUACAMOLE_SERVER=main
+
 #
 # Default build options for each core protocol support library, as well as
 # guacamole-server itself (these can be overridden at build time if different
@@ -74,8 +85,9 @@ ARG FREERDP_OPTS="\
     -DWITH_CLIENT=ON \
     -DWITH_CUPS=OFF \
     -DWITH_DIRECTFB=OFF \
-    -DWITH_FFMPEG=OFF \
+    -DWITH_FFMPEG=ON \
     -DWITH_FUSE=OFF \
+    -DWITH_GFX_H264=ON \
     -DWITH_GSM=OFF \
     -DWITH_GSSAPI=OFF \
     -DWITH_IPP=OFF \
@@ -93,10 +105,10 @@ ARG FREERDP_OPTS="\
     -DWITH_SERVER_INTERFACE=OFF \
     -DWITH_SHADOW_MAC=OFF \
     -DWITH_SHADOW_X11=OFF \
-    -DWITH_SWSCALE=OFF \
+    -DWITH_SWSCALE=ON \
     -DWITH_WAYLAND=OFF \
     -DWITH_X11=OFF \
-    -DWITH_X264=OFF \
+    -DWITH_X264=ON \
     -DWITH_XCURSOR=ON \
     -DWITH_XEXT=ON \
     -DWITH_XI=OFF \
@@ -113,6 +125,7 @@ ARG GUACAMOLE_SERVER_ARM_OPTS=""
 
 ARG GUACAMOLE_SERVER_OPTS="\
     --disable-guaclog \
+    --enable-allow-freerdp-snapshots \
     CPPFLAGS=-Wno-error=deprecated-declarations"
 
 ARG GUACAMOLE_SERVER_X86_OPTS=""
@@ -143,6 +156,7 @@ ARG LIBWEBSOCKETS_ARM_OPTS=""
 
 ARG LIBWEBSOCKETS_OPTS="\
     -DDISABLE_WERROR=ON \
+    -DLWS_WITH_HTTP3=OFF \
     -DLWS_WITHOUT_SERVER=ON \
     -DLWS_WITHOUT_TESTAPPS=ON \
     -DLWS_WITHOUT_TEST_CLIENT=ON \
@@ -170,6 +184,7 @@ RUN apk add --no-cache                \
         cjson-dev                     \
         cmake                         \
         cunit-dev                     \
+        ffmpeg-dev                    \
         git                           \
         grep                          \
         krb5-dev                      \
@@ -180,6 +195,7 @@ RUN apk add --no-cache                \
         make                          \
         openssl1.1-compat-dev         \
         pango-dev                     \
+        patch                         \
         pulseaudio-dev                \
         sdl2-dev                      \
         sdl2_ttf-dev                  \
@@ -276,6 +292,11 @@ ARG GUACAMOLE_SERVER_ARM_OPTS
 ARG GUACAMOLE_SERVER_OPTS
 ARG GUACAMOLE_SERVER_X86_OPTS
 ARG PREFIX_DIR
+ARG WITH_GUACAMOLE_SERVER
+
+# Where the guacamole-server git clone lands - autobuild.sh always clones
+# into "/tmp/<basename of the repo URL>", independent of BUILD_DIR.
+ARG GUACAMOLE_SERVER_SRC_DIR=/tmp/guacamole-server
 
 # Copy dependencies built in previous stages
 COPY --from=freerdp ${PREFIX_DIR} ${PREFIX_DIR}
@@ -284,16 +305,31 @@ COPY --from=libtelnet ${PREFIX_DIR} ${PREFIX_DIR}
 COPY --from=libvncclient ${PREFIX_DIR} ${PREFIX_DIR}
 COPY --from=libwebsockets ${PREFIX_DIR} ${PREFIX_DIR}
 
-# Use guacamole-server source from build context
-COPY . ${BUILD_DIR}
+# Local patches applied to the freshly cloned guacamole-server source below,
+# before it is built. See docker-patches/ for what and why.
+COPY ./docker-patches /tmp/guacamole-server-patches
 
-RUN ${BUILD_DIR}/src/guacd-docker/bin/autobuild.sh "GUACAMOLE_SERVER" "${BUILD_DIR}"
+# Fetch guacamole-server source directly from git rather than the local
+# build context, at the ref pinned by WITH_GUACAMOLE_SERVER above, and apply
+# local patches on top before handing off to autobuild.sh for the actual
+# build (autobuild.sh accepts a local, already-cloned directory just as well
+# as a URL to clone).
+RUN git clone https://github.com/apache/guacamole-server "${GUACAMOLE_SERVER_SRC_DIR}" \
+    && cd "${GUACAMOLE_SERVER_SRC_DIR}" \
+    && git -c advice.detachedHead=false checkout "${WITH_GUACAMOLE_SERVER}" \
+    && for patch_file in /tmp/guacamole-server-patches/*.patch; do \
+           echo "Applying $patch_file"; \
+           patch -p1 < "$patch_file"; \
+       done
+
+RUN ${BUILD_DIR}/src/guacd-docker/bin/autobuild.sh "GUACAMOLE_SERVER" \
+    "${GUACAMOLE_SERVER_SRC_DIR}"
 
 # Determine location of the FREERDP library based on the version.
 ARG FREERDP_LIB_PATH=${PREFIX_DIR}/lib/freerdp${FREERDP_VERSION}
 
 # Record the packages of all runtime library dependencies
-RUN ${BUILD_DIR}/src/guacd-docker/bin/list-dependencies.sh \
+RUN ${GUACAMOLE_SERVER_SRC_DIR}/src/guacd-docker/bin/list-dependencies.sh \
         ${PREFIX_DIR}/sbin/guacd               \
         ${PREFIX_DIR}/lib/libguac-client-*.so  \
         ${FREERDP_LIB_PATH}/*guac*.so   \

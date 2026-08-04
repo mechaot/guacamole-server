@@ -1587,6 +1587,17 @@ void guac_rdp_push_settings(guac_client* client,
         freerdp_settings_set_bool(rdp_settings, FreeRDP_SupportGraphicsPipeline, TRUE);
         freerdp_settings_set_bool(rdp_settings, FreeRDP_RemoteFxCodec, TRUE);
 
+        /* Advertise H.264 (AVC420/AVC444) GFX codec support. Some RDP GFX
+         * servers (e.g. KDE's krdpserver) require a client to advertise AVC
+         * support on the modern (10.4+) capability sets or they refuse the
+         * connection outright with ERRINFO_GRAPHICS_SUBSYSTEM_FAILED rather
+         * than falling back to a different codec. FreeRDP only includes AVC
+         * on those capability sets if GfxAVC444 is also enabled. Requires
+         * FreeRDP to have been built with H.264 support (WITH_FFMPEG or
+         * WITH_OPENH264). */
+        freerdp_settings_set_bool(rdp_settings, FreeRDP_GfxH264, TRUE);
+        freerdp_settings_set_bool(rdp_settings, FreeRDP_GfxAVC444, TRUE);
+
         if (freerdp_settings_get_uint32(rdp_settings, FreeRDP_ColorDepth) != RDP_GFX_REQUIRED_DEPTH) {
             guac_client_log(client, GUAC_LOG_WARNING, "Ignoring requested "
                     "color depth of %i bpp, as the RDP Graphics Pipeline "
@@ -1821,6 +1832,17 @@ void guac_rdp_push_settings(guac_client* client,
 
         rdp_settings->SupportGraphicsPipeline = TRUE;
         rdp_settings->RemoteFxCodec = TRUE;
+
+        /* Advertise H.264 (AVC420/AVC444) GFX codec support. Some RDP GFX
+         * servers (e.g. KDE's krdpserver) require a client to advertise AVC
+         * support on the modern (10.4+) capability sets or they refuse the
+         * connection outright with ERRINFO_GRAPHICS_SUBSYSTEM_FAILED rather
+         * than falling back to a different codec. FreeRDP only includes AVC
+         * on those capability sets if GfxAVC444 is also enabled. Requires
+         * FreeRDP to have been built with H.264 support (WITH_FFMPEG or
+         * WITH_OPENH264). */
+        rdp_settings->GfxH264 = TRUE;
+        rdp_settings->GfxAVC444 = TRUE;
 
         if (rdp_settings->ColorDepth != RDP_GFX_REQUIRED_DEPTH) {
             guac_client_log(client, GUAC_LOG_WARNING, "Ignoring requested "
